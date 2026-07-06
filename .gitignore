@@ -1,0 +1,37 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+credentials*
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+*.tmp
+*.bak
+
+# Armbian / build artifacts
+*.img
+*.img.gz
+build/
+output/
+
+# Qoder local config (per-user, not committed)
+AGENTS.local.md
+.qoder/settings.local.json
