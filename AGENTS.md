@@ -28,12 +28,15 @@ Build a Bash installer script for penetration testing, ethical hacking, and secu
 
 ## Installer Architecture
 
-- **Menu-driven**: Use `dialog` or `whiptail` for a categorized tool selection UI
+- **Single-file**: Everything lives in `install.sh` (~880 lines) for one-line GitHub install
+- **One-line install**: `curl -sSL https://raw.githubusercontent.com/dinhtrungkien/armkali/main/install.sh | sudo bash`
+- **Menu-driven**: Use `whiptail` (preferred) or `dialog` for a categorized tool selection UI, with a terminal fallback
 - **Categories**: Wireless, Web, Forensics, Exploitation, Password Cracking, Sniffing/Spoofing, Reverse Engineering, Information Gathering, Reporting
-- Each category maps to a list of packages; user selects categories or individual tools
-- Kali tool repo added via `apt sources` — use Kali ARM64 repos, not x86 metapackages blindly
+- Each category defines a `_NAME`, `_DESC`, `_PACKAGES` array, and an `install_*` function
+- Categories are registered in `_register_all()` into parallel arrays (`CAT_TAGS`, `CAT_NAMES`, `CAT_DESCS`, `CAT_FUNCS`)
+- Kali tool repo added via GPG keyring + `apt sources` — use Kali ARM64 repos, not x86 metapackages blindly
 - Verify package availability with `apt-cache show <pkg>` before attempting install
-- XFCE setup is a separate step: `xfce4`, `xfce4-goodies`, `kali-desktop-xfce`
+- XFCE setup is a menu option: installs `xfce4`, `xfce4-goodies`, `kali-desktop-xfce`, `lightdm`
 
 ## ARM64 / Kali Compatibility Notes
 
