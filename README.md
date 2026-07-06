@@ -235,7 +235,7 @@ The one-line installer downloads only the board file it needs from GitHub.
 
 ## Idempotent
 
-Safe to run multiple times. Packages already installed are skipped, Kali repo added only once, swap file and GPU overlay created only if missing.
+Safe to run multiple times. Packages already installed are skipped, Kali repo added only once, swap file and zram created only if missing.
 
 ## Limitations
 
@@ -250,13 +250,6 @@ Safe to run multiple times. Packages already installed are skipped, Kali repo ad
 2. Edit the relevant files (`install.sh`, `lib/common.sh`, or `boards/*.sh`)
 3. Run `shfmt -w -i 2 <file>` and `shellcheck -x <file>`
 4. Open a pull request
-
-### Adding a New Board
-
-1. Create `boards/yourboard.sh` with board constants and hook functions
-2. Add a detection rule in `install.sh:detect_board()`
-3. Update this README's Supported Boards table
-4. Test on actual hardware
 
 ## License
 
