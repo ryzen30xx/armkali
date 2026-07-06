@@ -4,15 +4,28 @@ This file provides guidance to the AI agent when working with code in this repos
 
 ## Project Overview
 
-Build a Bash installer script for penetration testing, ethical hacking, and security auditing tools (as found on Kali Linux) on **Armbian for the x96q TV box** (Allwinner H313 SoC, aarch64). The installer must also set up a **Kali Linux GUI** using **XFCE**.
+Build a Bash installer script for penetration testing, ethical hacking, and security auditing tools (as found on Kali Linux) on **ARM64 single-board computers**. The installer auto-detects the board and applies board-specific configuration. Currently supported boards:
 
-## Target Platform
+- **x96q TV Box** (Allwinner H313 SoC, 1GB RAM, Armbian)
+- **Raspberry Pi 3B+** (Broadcom BCM2837B0 SoC, 1GB RAM, Raspberry Pi OS/Armbian)
 
-- **SoC**: Allwinner H313 (quad-core Cortex-A53, aarch64)
-- **OS**: Armbian (Debian/Ubuntu base, aarch64)
-- **Architecture**: `arm64` / `aarch64` — never assume x86/x86_64 binaries exist
+The installer must also set up a **Kali Linux GUI** using **XFCE**.
+
+## Target Platforms
+
+| | x96q TV Box | Raspberry Pi 3B+ |
+|---|---|---|
+| **SoC** | Allwinner H313 | Broadcom BCM2837B0 |
+| **CPU** | Quad-core Cortex-A53 @ 1.5GHz | Quad-core Cortex-A53 @ 1.4GHz |
+| **RAM** | 1 GB | 1 GB |
+| **Architecture** | `arm64` / `aarch64` | `arm64` / `aarch64` |
+| **WiFi** | None (USB adapter required) | Built-in 802.11n + BT 4.2 |
+| **GPU** | Mali-G31 (no OpenCL) | VideoCore IV |
+| **OS** | Armbian | Raspberry Pi OS / Armbian |
+
+- Never assume x86/x86_64 binaries exist
 - **GUI**: XFCE4 desktop environment
-- **Constraints**: Limited RAM (~1 GB), eMMC or SD-card storage, no discrete GPU for hashcat
+- **Constraints**: Limited RAM (1 GB), eMMC or SD-card storage, no discrete GPU for hashcat
 
 ## Scripting Conventions
 
@@ -28,15 +41,19 @@ Build a Bash installer script for penetration testing, ethical hacking, and secu
 
 ## Installer Architecture
 
-- **Single-file**: Everything lives in `install.sh` (~880 lines) for one-line GitHub install
+- **Entry point**: `install.sh` — board auto-detection, downloads board files from GitHub if running via `curl | bash`
+- **Shared library**: `lib/common.sh` — utilities, UI, repo management, ARM64 compat, all 9 categories, XFCE setup, menu system
+- **Board configs**: `boards/x96q.sh`, `boards/rpi3bplus.sh` — board constants, hardware hooks, post-install steps
+- **Board hooks**: `board_banner()`, `board_arch_info()`, `board_gpu_warning()`, `board_wireless_note()`, `board_xfce_video_driver()`, `board_post_install()`
 - **One-line install**: `curl -sSL https://raw.githubusercontent.com/ryzen30xx/armkali/main/install.sh | sudo bash`
-- **Menu-driven**: Use `whiptail` (preferred) or `dialog` for a categorized tool selection UI, with a terminal fallback
+- **Force board**: `ARMKALI_BOARD=rpi3bplus` or `ARMKALI_BOARD=x96q` environment variable
+- **Menu-driven**: `whiptail` (preferred) or `dialog` with terminal fallback
 - **Categories**: Wireless, Web, Forensics, Exploitation, Password Cracking, Sniffing/Spoofing, Reverse Engineering, Information Gathering, Reporting
 - Each category defines a `_NAME`, `_DESC`, `_PACKAGES` array, and an `install_*` function
-- Categories are registered in `_register_all()` into parallel arrays (`CAT_TAGS`, `CAT_NAMES`, `CAT_DESCS`, `CAT_FUNCS`)
-- Kali tool repo added via GPG keyring + `apt sources` — use Kali ARM64 repos, not x86 metapackages blindly
+- Categories registered in `_register_all()` into parallel arrays (`CAT_TAGS`, `CAT_NAMES`, `CAT_DESCS`, `CAT_FUNCS`)
+- Kali tool repo added via GPG keyring + `apt sources` — use Kali ARM64 repos
 - Verify package availability with `apt-cache show <pkg>` before attempting install
-- XFCE setup is a menu option: installs `xfce4`, `xfce4-goodies`, `kali-desktop-xfce`, `lightdm`
+- XFCE setup is a menu option with board-specific video driver via `board_xfce_video_driver()`
 
 ## ARM64 / Kali Compatibility Notes
 
