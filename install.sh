@@ -3,10 +3,10 @@
 # armkali — One-line Kali Linux installer for x96q (Allwinner H313) on Armbian
 #
 # One-line install:
-#   curl -sSL https://raw.githubusercontent.com/dinhtrungkien/armkali/main/install.sh | sudo bash
+#   curl -sSL https://raw.githubusercontent.com/ryzen30xx/armkali/main/install.sh | sudo bash
 #
 # Or clone and run:
-#   git clone https://github.com/dinhtrungkien/armkali.git && cd armkali && sudo ./install.sh
+#   git clone https://github.com/ryzen30xx/armkali.git && cd armkali && sudo ./install.sh
 #
 # shellcheck disable=SC2034
 

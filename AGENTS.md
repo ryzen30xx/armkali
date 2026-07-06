@@ -29,7 +29,7 @@ Build a Bash installer script for penetration testing, ethical hacking, and secu
 ## Installer Architecture
 
 - **Single-file**: Everything lives in `install.sh` (~880 lines) for one-line GitHub install
-- **One-line install**: `curl -sSL https://raw.githubusercontent.com/dinhtrungkien/armkali/main/install.sh | sudo bash`
+- **One-line install**: `curl -sSL https://raw.githubusercontent.com/ryzen30xx/armkali/main/install.sh | sudo bash`
 - **Menu-driven**: Use `whiptail` (preferred) or `dialog` for a categorized tool selection UI, with a terminal fallback
 - **Categories**: Wireless, Web, Forensics, Exploitation, Password Cracking, Sniffing/Spoofing, Reverse Engineering, Information Gathering, Reporting
 - Each category defines a `_NAME`, `_DESC`, `_PACKAGES` array, and an `install_*` function
