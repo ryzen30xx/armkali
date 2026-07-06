@@ -19,13 +19,13 @@ The installer must also set up a **Kali Linux GUI** using **XFCE**.
 | **CPU** | Quad-core Cortex-A53 @ 1.5GHz | Quad-core Cortex-A53 @ 1.4GHz |
 | **RAM** | 1 GB | 1 GB |
 | **Architecture** | `arm64` / `aarch64` | `arm64` / `aarch64` |
-| **WiFi** | None (USB adapter required) | Built-in 802.11n + BT 4.2 |
+| **WiFi** | XRadio XR819 (2.4GHz, no monitor mode) | Built-in 802.11n + BT 4.2 |
 | **GPU** | Mali-G31 (no OpenCL) | VideoCore IV |
 | **OS** | Armbian | Raspberry Pi OS / Armbian |
 
 - Never assume x86/x86_64 binaries exist
 - **GUI**: XFCE4 desktop environment
-- **Constraints**: Limited RAM (1 GB), eMMC or SD-card storage, no discrete GPU for hashcat
+- **Constraints**: Base spec is **1GB RAM / 8GB eMMC**. No discrete GPU for hashcat. Installer is tuned for this floor (see "Base Spec Optimizations" below).
 
 ## Scripting Conventions
 
@@ -44,7 +44,7 @@ The installer must also set up a **Kali Linux GUI** using **XFCE**.
 - **Entry point**: `install.sh` — board auto-detection, downloads board files from GitHub if running via `curl | bash`
 - **Shared library**: `lib/common.sh` — utilities, UI, repo management, ARM64 compat, all 9 categories, XFCE setup, menu system
 - **Board configs**: `boards/x96q.sh`, `boards/rpi3bplus.sh` — board constants, hardware hooks, post-install steps
-- **Board hooks**: `board_banner()`, `board_arch_info()`, `board_gpu_warning()`, `board_wireless_note()`, `board_xfce_video_driver()`, `board_post_install()`
+- **Board hooks**: `board_banner()`, `board_arch_info()`, `board_gpu_warning()`, `board_wireless_note()`, `board_xfce_video_driver()`, `board_system_tune()`, `board_post_install()`
 - **One-line install**: `curl -sSL https://raw.githubusercontent.com/ryzen30xx/armkali/main/install.sh | sudo bash`
 - **Force board**: `ARMKALI_BOARD=rpi3bplus` or `ARMKALI_BOARD=x96q` environment variable
 - **Menu-driven**: `whiptail` (preferred) or `dialog` with terminal fallback
@@ -52,7 +52,7 @@ The installer must also set up a **Kali Linux GUI** using **XFCE**.
 - Each category defines a `_NAME`, `_DESC`, `_PACKAGES` array, and an `install_*` function
 - Categories registered in `_register_all()` into parallel arrays (`CAT_TAGS`, `CAT_NAMES`, `CAT_DESCS`, `CAT_FUNCS`)
 - Kali tool repo added via GPG keyring + `apt sources` — use Kali ARM64 repos
-- Verify package availability with `apt-cache show <pkg>` before attempting install
+- Verify package availability via `pkg_available()` (uses preloaded associative array from `pkg_cache_preload()`; falls back to `apt-cache show` if cache is empty)
 - XFCE setup is a menu option with board-specific video driver via `board_xfce_video_driver()`
 
 ## ARM64 / Kali Compatibility Notes
@@ -67,3 +67,37 @@ The installer must also set up a **Kali Linux GUI** using **XFCE**.
 - **Formatter**: `shfmt -w -i 2 <file>` (auto-applied on edit via hook)
 - **Linter**: `shellcheck -x <file>`
 - Run both before marking any script change as complete
+
+## Base Spec Optimizations
+
+The installer is tuned for the **1GB RAM / 8GB eMMC** base hardware. **CPU and RAM are soldered (fixed); only storage is upgradable.** Do not regress these:
+
+### RAM-tier architecture (do not change)
+
+- **`detect_ram_tier()`** — reads `/proc/meminfo` and returns `base` (<1.5GB) or `extended`. Result stored in `readonly RAM_TIER`. Called once at startup.
+- **`install_tiered()`** — unified helper that accepts `--base <pkgs>` and `--extra <pkgs>`. Always installs BASE; installs EXTRA only if `RAM_TIER=extended`. On base tier, logs skipped extras with CLI alternative hints.
+- **Category split pattern** — each category now has `_PACKAGES_BASE` (lightweight CLI) and `_PACKAGES_EXTRA` (Java/GUI/memory-hogs). Example: `WEB_PACKAGES_BASE` = sqlmap/nikto/ffuf (light); `WEB_PACKAGES_EXTRA` = burpsuite/zaproxy/maltego (Java, 500MB-1GB RAM).
+- **`Low-RAM Essentials` category** — hand-picked 27 lightest tools across all 9 categories. Tag `lowram`, registered first in `_register_all()`. Always safe on 1GB.
+- **Auto-skipped on 1GB**: burpsuite, zaproxy, maltego, ghidra, jadx, jd-gui, cutter, edb-debugger, wireshark, tshark, kismet, autopsy, guymager, python3-plaso, bulk-extractor, beef-xss, social-engineer-toolkit, hashcat, ophcrack, spiderfoot, metabigor, eyewitness, cutycapt, cherrytree, keepnote, dradis.
+
+### Dev-kit UART (default-on — do not gate behind confirm)
+
+- **`enable_serial_console <tty> <baud>`** — helper in `lib/common.sh`. Writes a systemd override (`/etc/systemd/system/serial-getty@<tty>.service.d/override.conf`) with `agetty -8 -L <tty> <baud> $TERM`, then enables + starts the unit. Idempotent.
+- **x96q**: `enable_serial_console "ttyS0" "115200"` — H313 UART pads on PCB (RX/TX/GND between USB1 and CVBS socket).
+- **RPi 3B+**: `board_enable_serial_console` adds `enable_uart=1` to `/boot/config.txt`, appends `console=ttyAMA0,115200` to `/boot/cmdline.txt`, then calls `enable_serial_console "ttyAMA0" "115200"`.
+- Default-on policy: the board is sold as a dev kit — users buying a cheap ARM box expect serial access for boot-log debugging and headless recovery. Do not prompt for confirmation.
+
+### XFCE 1GB tuning (do not remove)
+
+- **`xfce_tune_1gb()`** — writes xfconf XML to disable compositor, shadows, animations, thumbnails. Runs only when `RAM_TIER=base` and a non-root user exists. Called from `action_install_gui` and `action_install_all`. Saves ~50MB RAM.
+- **`tumblerd` masked** — thumbnailer disabled (heavy on eMMC I/O and CPU).
+- **`thunar-volman` disabled** — automount polling disabled (saves CPU cycles).
+
+### Storage tuning (less critical — storage is upgradable)
+
+- **`pkg_cache_preload()`** — called after `apt-get update` in `repo_setup()`. Loads `apt-cache dumpavail` into an associative array. `pkg_available()` consults the array in O(1) instead of shelling out per-package (2-5s each on eMMC).
+- **`system_tune()`** — default hook in `lib/common.sh`. Writes `/etc/apt/apt.conf.d/90-armkali-minimal` (no recommends/suggests/translations), creates a 1GB `/swapfile`, sets up 512MB zram compressed swap with priority 100, and bumps `vm.swappiness` to 60. Board files may override `board_system_tune()` to do board-specific tuning before calling `system_tune()`.
+- **All `install_*` functions use `install_packages` (with `--no-install-recommends`)**. Do not re-add `install_packages_full` — it was removed.
+- **XFCE minimal**: dropped `xfce4-goodies`, `xfce4-screensaver`, `firefox-esr`, `pulseaudio`, `pavucontrol` to fit 8GB eMMC.
+- **`check_disk_space()`** — fails if `/var` <100MB, warns if `/` <2GB. Wired into `action_install_all()`.
+- **RPi `gpu_mem=64`** — `board_system_tune()` in `boards/rpi3bplus.sh` overrides the 128MB default to free 64MB of system RAM.

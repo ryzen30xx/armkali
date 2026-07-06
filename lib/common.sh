@@ -38,6 +38,17 @@ log() {
   esac
 }
 
+declare -A pkg_cache=()
+
+pkg_cache_preload() {
+  log INFO "Preloading package cache (faster than per-package lookup on eMMC)..."
+  local line
+  while IFS=' ' read -r line; do
+    pkg_cache["${line%% *}"]=1
+  done < <(apt-cache dumpavail 2>/dev/null | grep -E '^Package: ' | sed 's/^Package: //')
+  log INFO "Package cache loaded: ${#pkg_cache[@]} entries"
+}
+
 check_root() {
   if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}Error: This script must be run as root (sudo).${NC}" >&2
@@ -55,8 +66,32 @@ confirm() {
   [[ "$answer" =~ ^[Yy]([Ee][Ss])?$ ]]
 }
 
+check_disk_space() {
+  local avail_kb
+  avail_kb="$(df -k /var 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [[ -n "$avail_kb" && "$avail_kb" -lt 102400 ]]; then
+    log ERROR "Less than 100MB free on /var — apt operations will fail"
+    log ERROR "Free up space or use a larger storage device (8GB+ eMMC/SD)"
+    return 1
+  fi
+  local root_kb
+  root_kb="$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [[ -n "$root_kb" && "$root_kb" -lt 2097152 ]]; then
+    log WARN "Less than 2GB free on rootfs — full install requires ~5-6GB"
+    log WARN "Base spec (8GB eMMC): install categories selectively instead of 'Install ALL'"
+    if ! confirm "Continue despite low disk space?"; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
 pkg_available() {
   local pkg="$1"
+  if [[ ${#pkg_cache[@]} -gt 0 ]]; then
+    [[ -n "${pkg_cache[$pkg]:-}" ]]
+    return
+  fi
   apt-cache show "$pkg" &>/dev/null
 }
 
@@ -84,32 +119,6 @@ install_packages() {
 
   log INFO "Installing ${#available[@]} package(s)..."
   apt-get install -y --no-install-recommends "${available[@]}" 2>&1 | tee -a "$LOG_FILE"
-}
-
-install_packages_full() {
-  local -a pkgs=("$@")
-  local -a available=()
-  local -a missing=()
-
-  for pkg in "${pkgs[@]}"; do
-    if pkg_available "$pkg"; then
-      available+=("$pkg")
-    else
-      missing+=("$pkg")
-    fi
-  done
-
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    log WARN "Skipping unavailable packages: ${missing[*]}"
-  fi
-
-  if [[ ${#available[@]} -eq 0 ]]; then
-    log WARN "No packages to install from this group"
-    return 0
-  fi
-
-  log INFO "Installing ${#available[@]} package(s)..."
-  apt-get install -y "${available[@]}" 2>&1 | tee -a "$LOG_FILE"
 }
 
 system_update() {
@@ -332,6 +341,7 @@ EOF
 
   log INFO "Updating package lists..."
   apt-get update 2>&1 | tee -a "$LOG_FILE"
+  pkg_cache_preload
   log INFO "Kali repository configured successfully"
 }
 
@@ -424,6 +434,23 @@ filter_arm64_packages() {
 }
 
 ###############################################################################
+# RAM tier detection (CPU/RAM are fixed on these boards; storage is upgradable)
+###############################################################################
+
+detect_ram_tier() {
+  local total_kb
+  total_kb="$(awk '/MemTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 1048576)"
+  if [[ "$total_kb" -lt 1572864 ]]; then
+    echo "base"
+  else
+    echo "extended"
+  fi
+}
+
+readonly RAM_TIER
+RAM_TIER="$(detect_ram_tier)"
+
+###############################################################################
 # Board hook defaults (overridden by board files)
 ###############################################################################
 
@@ -450,24 +477,149 @@ board_wireless_note() { :; }
 board_xfce_video_driver() { echo "xserver-xorg-video-fbdev"; }
 board_post_install() { :; }
 
+install_tiered() {
+  local category="$1"
+  shift
+  local -a base_pkgs=()
+  local -a extra_pkgs=()
+  local mode=""
+  for arg in "$@"; do
+    case "$arg" in
+    --base) mode="base" ;;
+    --extra) mode="extra" ;;
+    --) mode="" ;;
+    *)
+      if [[ "$mode" == "base" ]]; then
+        base_pkgs+=("$arg")
+      elif [[ "$mode" == "extra" ]]; then
+        extra_pkgs+=("$arg")
+      fi
+      ;;
+    esac
+  done
+
+  log STEP "Installing ${category} (RAM tier: ${RAM_TIER})"
+
+  local -a filtered_base
+  read -ra filtered_base <<<"$(filter_arm64_packages "${base_pkgs[@]}")"
+  if [[ ${#filtered_base[@]} -gt 0 ]]; then
+    install_packages "${filtered_base[@]}"
+  fi
+
+  if [[ ${#extra_pkgs[@]} -gt 0 ]]; then
+    if [[ "$RAM_TIER" == "extended" ]]; then
+      local -a filtered_extra
+      read -ra filtered_extra <<<"$(filter_arm64_packages "${extra_pkgs[@]}")"
+      if [[ ${#filtered_extra[@]} -gt 0 ]]; then
+        log INFO "Extended RAM detected — installing optional packages"
+        install_packages "${filtered_extra[@]}"
+      fi
+    else
+      log WARN "Base RAM (1GB): skipping ${#extra_pkgs[@]} memory-heavy package(s)"
+      log WARN "Skipped: ${extra_pkgs[*]}"
+      log WARN "Use CLI alternatives on 1GB RAM:"
+      log WARN "  • burpsuite / zaproxy / beef-xss -> sqlmap, ffuf, nikto (already installed)"
+      log WARN "  • ghidra / jd-gui / cutter -> radare2, gdb, rizin (already installed)"
+      log WARN "  • wireshark GUI -> tshark (CLI, already installed)"
+      log WARN "  • maltego / spiderfoot / metabigor -> fierce, dnsrecon, theharvester (already installed)"
+      log WARN "Install manually later with: apt install <pkg> (expect heavy swap use)"
+    fi
+  fi
+}
+
+enable_serial_console() {
+  local tty="${1:-ttyS0}"
+  local baud="${2:-115200}"
+
+  if ! command -v systemctl &>/dev/null; then
+    log WARN "systemd not available — cannot enable serial-getty"
+    return 0
+  fi
+
+  log INFO "Enabling serial console on /dev/${tty} @ ${baud} baud (UART dev-kit access)..."
+
+  local override_dir="/etc/systemd/system/serial-getty@${tty}.service.d"
+  mkdir -p "$override_dir"
+  cat >"${override_dir}/override.conf" <<EOF
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty -8 -L ${tty} ${baud} \$TERM
+EOF
+
+  if systemctl enable "serial-getty@${tty}.service" 2>/dev/null; then
+    systemctl start "serial-getty@${tty}.service" 2>/dev/null || true
+    log INFO "Serial console active: connect UART adapter -> /dev/${tty} @ ${baud} 8N1"
+    log INFO "Login prompt available over UART — use picocom/minicom/screen on host PC"
+  else
+    log WARN "Could not enable serial-getty@${tty} (unit may not exist on this board)"
+  fi
+}
+
+system_tune() {
+  log STEP "Tuning system for base spec (1GB RAM / 8GB eMMC)"
+
+  log INFO "Configuring apt: skip recommends + translations (saves disk on every install)..."
+  mkdir -p /etc/apt/apt.conf.d
+  cat >/etc/apt/apt.conf.d/90-armkali-minimal <<'EOF'
+APT::Install-Recommends "false";
+APT::Install-Suggests "false";
+Acquire::Languages "none";
+DPkg::Options:: "--force-confdef";
+DPkg::Options:: "--force-confold";
+EOF
+
+  if ! grep -q '/swapfile' /proc/swaps 2>/dev/null && [[ ! -f /swapfile ]]; then
+    log INFO "Creating 1GB swap file..."
+    fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    echo '/swapfile none swap sw 0 0' >>/etc/fstab
+    log INFO "1GB swap file created and enabled"
+  else
+    log INFO "Swap already configured"
+  fi
+
+  if command -v zramctl &>/dev/null && ! zramctl --noheadings 2>/dev/null | grep -q zram; then
+    log INFO "Setting up zram (compressed in-RAM swap — boosts effective RAM)..."
+    modprobe zram 2>/dev/null || true
+    if [[ -e /sys/block/zram0/disksize ]]; then
+      echo 512M >/sys/block/zram0/disksize 2>/dev/null || true
+      mkswap /dev/zram0 2>/dev/null && swapon -p 100 /dev/zram0 2>/dev/null || true
+      log INFO "zram0: 512MB compressed swap active"
+    fi
+  fi
+
+  local current_swappiness
+  current_swappiness="$(cat /proc/sys/vm/swappiness 2>/dev/null || echo 0)"
+  if [[ "$current_swappiness" -lt 60 ]]; then
+    log INFO "Tuning vm.swappiness: ${current_swappiness} -> 60 (swap earlier to avoid OOM)"
+    sysctl -w vm.swappiness=60 >/dev/null 2>&1 || true
+    if ! grep -q 'vm.swappiness' /etc/sysctl.conf 2>/dev/null; then
+      echo 'vm.swappiness=60' >>/etc/sysctl.conf
+    fi
+  fi
+}
+
 ###############################################################################
 # Category: Wireless Attacks
 ###############################################################################
 
 readonly WIRELESS_NAME="Wireless Attacks"
 readonly WIRELESS_DESC="WiFi, Bluetooth, and RF tools"
-readonly WIRELESS_PACKAGES=(
+readonly WIRELESS_PACKAGES_BASE=(
   aircrack-ng reaver bully cowpatty pixiewps wifite
-  kismet hashcat hcxdumptool hcxtools bettercap mdk4
-  wavemon wireshark
+  hcxdumptool hcxtools bettercap mdk4 wavemon
+)
+readonly WIRELESS_PACKAGES_EXTRA=(
+  kismet wireshark
 )
 
 install_wireless() {
-  log STEP "Installing Wireless Attack Tools"
   board_wireless_note
-  local -a filtered
-  read -ra filtered <<<"$(filter_arm64_packages "${WIRELESS_PACKAGES[@]}")"
-  install_packages "${filtered[@]}"
+  install_tiered "$WIRELESS_NAME" \
+    --base "${WIRELESS_PACKAGES_BASE[@]}" \
+    --extra "${WIRELESS_PACKAGES_EXTRA[@]}"
 }
 
 ###############################################################################
@@ -476,17 +628,19 @@ install_wireless() {
 
 readonly WEB_NAME="Web Application Analysis"
 readonly WEB_DESC="Web scanners, proxies, and exploitation tools"
-readonly WEB_PACKAGES=(
-  burpsuite sqlmap nikto dirb dirbuster gobuster ffuf
-  whatweb wpscan commix zaproxy fierce theharvester
-  maltego sublist3r httrack skipfish cadaver
+readonly WEB_PACKAGES_BASE=(
+  sqlmap nikto dirb dirbuster gobuster ffuf
+  whatweb wpscan commix fierce theharvester
+  sublist3r httrack skipfish cadaver
+)
+readonly WEB_PACKAGES_EXTRA=(
+  burpsuite zaproxy maltego
 )
 
 install_web() {
-  log STEP "Installing Web Application Analysis Tools"
-  local -a filtered
-  read -ra filtered <<<"$(filter_arm64_packages "${WEB_PACKAGES[@]}")"
-  install_packages "${filtered[@]}"
+  install_tiered "$WEB_NAME" \
+    --base "${WEB_PACKAGES_BASE[@]}" \
+    --extra "${WEB_PACKAGES_EXTRA[@]}"
 }
 
 ###############################################################################
@@ -495,17 +649,19 @@ install_web() {
 
 readonly FORENSICS_NAME="Forensics"
 readonly FORENSICS_DESC="Disk imaging, memory analysis, and evidence gathering"
-readonly FORENSICS_PACKAGES=(
-  autopsy sleuthkit binwalk foremost scalpel testdisk
-  gddrescue afflib-tools ewf-tools chntpw dc3dd guymager
-  libregf-utils python3-plaso bulk-extractor
+readonly FORENSICS_PACKAGES_BASE=(
+  sleuthkit binwalk foremost scalpel testdisk
+  gddrescue afflib-tools ewf-tools chntpw dc3dd
+  libregf-utils
+)
+readonly FORENSICS_PACKAGES_EXTRA=(
+  autopsy guymager python3-plaso bulk-extractor
 )
 
 install_forensics() {
-  log STEP "Installing Forensics Tools"
-  local -a filtered
-  read -ra filtered <<<"$(filter_arm64_packages "${FORENSICS_PACKAGES[@]}")"
-  install_packages "${filtered[@]}"
+  install_tiered "$FORENSICS_NAME" \
+    --base "${FORENSICS_PACKAGES_BASE[@]}" \
+    --extra "${FORENSICS_PACKAGES_EXTRA[@]}"
 }
 
 ###############################################################################
@@ -514,17 +670,19 @@ install_forensics() {
 
 readonly EXPLOITATION_NAME="Exploitation"
 readonly EXPLOITATION_DESC="Exploit frameworks, payloads, and vulnerability assessment"
-readonly EXPLOITATION_PACKAGES=(
-  metasploit-framework searchsploit sqlmap beef-xss
-  social-engineer-toolkit crackmapexec impacket-scripts
-  evil-winrm responder empire routersploit ysoserial commix
+readonly EXPLOITATION_PACKAGES_BASE=(
+  metasploit-framework searchsploit sqlmap
+  impacket-scripts evil-winrm responder empire
+  routersploit ysoserial commix
+)
+readonly EXPLOITATION_PACKAGES_EXTRA=(
+  beef-xss social-engineer-toolkit
 )
 
 install_exploitation() {
-  log STEP "Installing Exploitation Tools"
-  local -a filtered
-  read -ra filtered <<<"$(filter_arm64_packages "${EXPLOITATION_PACKAGES[@]}")"
-  install_packages "${filtered[@]}"
+  install_tiered "$EXPLOITATION_NAME" \
+    --base "${EXPLOITATION_PACKAGES_BASE[@]}" \
+    --extra "${EXPLOITATION_PACKAGES_EXTRA[@]}"
 }
 
 ###############################################################################
@@ -533,18 +691,22 @@ install_exploitation() {
 
 readonly PASSWORD_NAME="Password Cracking"
 readonly PASSWORD_DESC="Hash cracking, brute-force, and dictionary attack tools"
-readonly PASSWORD_PACKAGES=(
-  hashcat john hydra medusa crunch cewl cupp
+readonly PASSWORD_PACKAGES_BASE=(
+  john hydra medusa crunch cewl cupp
   fcrackzip pdfcrack rarcrack hash-identifier
-  ophcrack ophcrack-cli
+)
+readonly PASSWORD_PACKAGES_EXTRA=(
+  hashcat ophcrack ophcrack-cli
 )
 
 install_password() {
-  log STEP "Installing Password Cracking Tools"
   board_gpu_warning
-  local -a filtered
-  read -ra filtered <<<"$(filter_arm64_packages "${PASSWORD_PACKAGES[@]}")"
-  install_packages "${filtered[@]}"
+  if [[ "$RAM_TIER" == "base" ]]; then
+    log WARN "On 1GB RAM, prefer 'john' over 'hashcat' (hashcat has higher memory footprint)"
+  fi
+  install_tiered "$PASSWORD_NAME" \
+    --base "${PASSWORD_PACKAGES_BASE[@]}" \
+    --extra "${PASSWORD_PACKAGES_EXTRA[@]}"
 }
 
 ###############################################################################
@@ -553,17 +715,19 @@ install_password() {
 
 readonly SNIFFING_NAME="Sniffing & Spoofing"
 readonly SNIFFING_DESC="Network sniffing, MITM, and spoofing tools"
-readonly SNIFFING_PACKAGES=(
-  wireshark tshark ettercap-text-only bettercap responder
+readonly SNIFFING_PACKAGES_BASE=(
+  ettercap-text-only bettercap responder
   mitmproxy sslstrip tcpflow ngrep netsniff-ng macchanger
   arpspoof dnschef
 )
+readonly SNIFFING_PACKAGES_EXTRA=(
+  wireshark tshark
+)
 
 install_sniffing() {
-  log STEP "Installing Sniffing & Spoofing Tools"
-  local -a filtered
-  read -ra filtered <<<"$(filter_arm64_packages "${SNIFFING_PACKAGES[@]}")"
-  install_packages "${filtered[@]}"
+  install_tiered "$SNIFFING_NAME" \
+    --base "${SNIFFING_PACKAGES_BASE[@]}" \
+    --extra "${SNIFFING_PACKAGES_EXTRA[@]}"
 }
 
 ###############################################################################
@@ -572,17 +736,18 @@ install_sniffing() {
 
 readonly REVERSE_NAME="Reverse Engineering"
 readonly REVERSE_DESC="Disassemblers, debuggers, and binary analysis"
-readonly REVERSE_PACKAGES=(
-  radare2 ghidra gdb apktool dex2jar jadx jd-gui
-  edb-debugger binwalk rizin cutter
+readonly REVERSE_PACKAGES_BASE=(
+  radare2 gdb apktool dex2jar binwalk rizin
+)
+readonly REVERSE_PACKAGES_EXTRA=(
+  ghidra jadx jd-gui edb-debugger cutter
 )
 
 install_reverse() {
-  log STEP "Installing Reverse Engineering Tools"
   log WARN "Some RE tools require Java — will be installed as dependency"
-  local -a filtered
-  read -ra filtered <<<"$(filter_arm64_packages "${REVERSE_PACKAGES[@]}")"
-  install_packages "${filtered[@]}"
+  install_tiered "$REVERSE_NAME" \
+    --base "${REVERSE_PACKAGES_BASE[@]}" \
+    --extra "${REVERSE_PACKAGES_EXTRA[@]}"
 }
 
 ###############################################################################
@@ -591,17 +756,19 @@ install_reverse() {
 
 readonly INFOGATHER_NAME="Information Gathering"
 readonly INFOGATHER_DESC="Scanners, enumerators, and OSINT tools"
-readonly INFOGATHER_PACKAGES=(
-  nmap masscan fierce theharvester maltego recon-ng
-  spiderfoot whois dnsrecon dnsenum amass sublist3r
-  sherlock holehe ghunt shodan metabigor
+readonly INFOGATHER_PACKAGES_BASE=(
+  nmap masscan fierce theharvester recon-ng
+  whois dnsrecon dnsenum amass sublist3r
+  sherlock holehe ghunt shodan
+)
+readonly INFOGATHER_PACKAGES_EXTRA=(
+  maltego spiderfoot metabigor
 )
 
 install_infogather() {
-  log STEP "Installing Information Gathering Tools"
-  local -a filtered
-  read -ra filtered <<<"$(filter_arm64_packages "${INFOGATHER_PACKAGES[@]}")"
-  install_packages "${filtered[@]}"
+  install_tiered "$INFOGATHER_NAME" \
+    --base "${INFOGATHER_PACKAGES_BASE[@]}" \
+    --extra "${INFOGATHER_PACKAGES_EXTRA[@]}"
 }
 
 ###############################################################################
@@ -610,14 +777,42 @@ install_infogather() {
 
 readonly REPORTING_NAME="Reporting"
 readonly REPORTING_DESC="Report generation and documentation tools"
-readonly REPORTING_PACKAGES=(
-  eyewitness cutycapt pipal cherrytree keepnote dradis
+readonly REPORTING_PACKAGES_BASE=(
+  pipal
+)
+readonly REPORTING_PACKAGES_EXTRA=(
+  eyewitness cutycapt cherrytree keepnote dradis
 )
 
 install_reporting() {
-  log STEP "Installing Reporting Tools"
+  install_tiered "$REPORTING_NAME" \
+    --base "${REPORTING_PACKAGES_BASE[@]}" \
+    --extra "${REPORTING_PACKAGES_EXTRA[@]}"
+}
+
+###############################################################################
+# Low-RAM Essentials — hand-picked lightest tools across all 9 categories
+###############################################################################
+
+readonly LOWRAM_NAME="Low-RAM Essentials"
+readonly LOWRAM_DESC="Lightest tools from every category, safe for 1GB RAM"
+readonly LOWRAM_PACKAGES=(
+  aircrack-ng reaver pixiewps hcxdumptool hcxtools
+  sqlmap nikto ffuf whatweb
+  testdisk binwalk foremost
+  metasploit-framework searchsploit impacket-scripts evil-winrm
+  john hydra
+  bettercap netsniff-ng macchanger
+  radare2 gdb rizin
+  nmap fierce dnsrecon amass sherlock
+  pipal
+)
+
+install_lowram_essentials() {
+  log STEP "Installing Low-RAM Essentials"
+  log INFO "Hand-picked lightest tools from all 9 categories — safe on 1GB RAM"
   local -a filtered
-  read -ra filtered <<<"$(filter_arm64_packages "${REPORTING_PACKAGES[@]}")"
+  read -ra filtered <<<"$(filter_arm64_packages "${LOWRAM_PACKAGES[@]}")"
   install_packages "${filtered[@]}"
 }
 
@@ -626,7 +821,7 @@ install_reporting() {
 ###############################################################################
 
 xfce_is_installed() {
-  command -v xfce4-session &>/dev/null && command -v startx &>/dev/null
+  command -v xfce4-session &>/dev/null
 }
 
 xfce_install() {
@@ -641,14 +836,14 @@ xfce_install() {
   video_driver="$(board_xfce_video_driver)"
 
   log INFO "Installing X server and display manager..."
-  install_packages_full \
+  install_packages \
     xorg xserver-xorg-core "$video_driver" \
     lightdm lightdm-gtk-greeter
 
-  log INFO "Installing XFCE4 desktop..."
-  install_packages_full \
-    xfce4 xfce4-goodies xfce4-terminal \
-    xfce4-power-manager xfce4-screensaver xfce4-notifyd
+  log INFO "Installing XFCE4 desktop (minimal for 1GB RAM / 8GB eMMC)..."
+  install_packages \
+    xfce4 xfce4-terminal \
+    xfce4-power-manager xfce4-notifyd
 
   log INFO "Installing Kali desktop theme..."
   local -a theme_pkgs=(kali-desktop-xfce kali-themes kali-menu)
@@ -661,14 +856,13 @@ xfce_install() {
     fi
   done
   if [[ ${#available_theme[@]} -gt 0 ]]; then
-    install_packages_full "${available_theme[@]}"
+    install_packages "${available_theme[@]}"
   fi
 
   log INFO "Installing essential GUI utilities..."
-  install_packages_full \
+  install_packages \
     dbus-x11 x11-xserver-utils xdg-utils mesa-utils \
-    pulseaudio pavucontrol network-manager-gnome \
-    thunar-archive-plugin file-roller mousepad firefox-esr
+    network-manager-gnome thunar-archive-plugin file-roller mousepad
 
   log INFO "Enabling LightDM display manager..."
   if command -v systemctl &>/dev/null; then
@@ -702,6 +896,84 @@ EOF
   log INFO "Autologin configured for $user"
 }
 
+xfce_tune_1gb() {
+  if [[ "$RAM_TIER" != "base" ]]; then
+    return 0
+  fi
+
+  local target_user
+  target_user="$(logname 2>/dev/null || echo "${SUDO_USER:-}")"
+  if [[ -z "$target_user" || "$target_user" == "root" ]]; then
+    log WARN "Cannot tune XFCE for 1GB: no non-root user detected (skipping)"
+    return 0
+  fi
+
+  local home
+  home="$(getent passwd "$target_user" 2>/dev/null | cut -d: -f6)"
+  if [[ -z "$home" || ! -d "$home" ]]; then
+    return 0
+  fi
+
+  log STEP "Tuning XFCE for 1GB RAM"
+
+  local xfconf_dir="${home}/.config/xfce4/xfconf/xfce-perchannel-xml"
+  mkdir -p "$xfconf_dir"
+  chown -R "${target_user}:${target_user}" "${home}/.config" 2>/dev/null || true
+
+  cat >"${xfconf_dir}/xfwm4.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="use_compositing" type="bool" value="false"/>
+    <property name="show_app_icon" type="bool" value="false"/>
+    <property name="show_dock_shadow" type="bool" value="false"/>
+    <property name="show_frame_shadow" type="bool" value="false"/>
+    <property name="show_popup_shadow" type="bool" value="false"/>
+    <property name="theme" type="string" value="Default"/>
+  </property>
+</channel>
+EOF
+
+  cat >"${xfconf_dir}/xfce4-desktop.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-desktop" version="1.0">
+  <property name="desktop-icons" type="empty">
+    <property name="file-icons" type="empty">
+      <property name="show-removable" type="bool" value="false"/>
+    </property>
+  </property>
+</channel>
+EOF
+
+  cat >"${xfconf_dir}/thunar-volman.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="thunar-volman" version="1.0">
+  <property name="automount-media" type="empty">
+    <property name="enabled" type="bool" value="false"/>
+  </property>
+  <property name="automount-drives" type="empty">
+    <property name="enabled" type="bool" value="false"/>
+  </property>
+</channel>
+EOF
+
+  chown -R "${target_user}:${target_user}" "$xfconf_dir" 2>/dev/null || true
+
+  local panel_autostart="${home}/.config/autostart"
+  mkdir -p "$panel_autostart"
+  cat >"${panel_autostart}/zz-disable-xfce4-tumbler.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Disable Tumbler Thumbnailer
+Exec=sh -c 'systemctl --user mask tumblerd.service 2>/dev/null; true'
+X-GNOME-Autostart-enabled=true
+EOF
+  chown -R "${target_user}:${target_user}" "$panel_autostart" 2>/dev/null || true
+
+  log INFO "Disabled compositor, shadows, animations, thumbnails (saves ~50MB RAM + CPU)"
+  log INFO "Re-enable later via xfce4-settings-manager -> Window Manager Tweaks -> Compositor"
+}
+
 ###############################################################################
 # Category registry
 ###############################################################################
@@ -720,6 +992,7 @@ register_category() {
 }
 
 _register_all() {
+  register_category "lowram" "$LOWRAM_NAME" "$LOWRAM_DESC" "install_lowram_essentials"
   register_category "wireless" "$WIRELESS_NAME" "$WIRELESS_DESC" "install_wireless"
   register_category "web" "$WEB_NAME" "$WEB_DESC" "install_web"
   register_category "forensics" "$FORENSICS_NAME" "$FORENSICS_DESC" "install_forensics"
@@ -784,6 +1057,7 @@ action_install_gui() {
   repo_setup
   xfce_install
   xfce_configure_autologin
+  xfce_tune_1gb
   echo ""
   read -r -p "Press Enter to return to menu..."
 }
@@ -795,6 +1069,8 @@ action_install_all() {
     return 0
   fi
 
+  check_disk_space || return 0
+
   repo_setup
   system_update
 
@@ -805,6 +1081,7 @@ action_install_all() {
 
   xfce_install
   xfce_configure_autologin
+  xfce_tune_1gb
   board_post_install
 
   echo ""
@@ -852,7 +1129,13 @@ main_menu() {
     "7" "Exit"
   )
 
-  local subtitle="Kali Linux Tools for ${BOARD_PLATFORM:-ARM64} (${BOARD_SOC:-unknown})"
+  local ram_label
+  if [[ "$RAM_TIER" == "base" ]]; then
+    ram_label="1GB RAM (base — heavy tools auto-skipped)"
+  else
+    ram_label="2GB+ RAM (extended — all tools available)"
+  fi
+  local subtitle="Kali Linux Tools for ${BOARD_PLATFORM:-ARM64} (${BOARD_SOC:-unknown})\n${ram_label}"
 
   local choice
   while true; do

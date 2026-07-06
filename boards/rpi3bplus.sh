@@ -39,11 +39,26 @@ board_xfce_video_driver() {
   echo "xserver-xorg-video-fbdev"
 }
 
+board_system_tune() {
+  local config_txt="/boot/config.txt"
+  if [[ -f "$config_txt" ]]; then
+    if grep -q "gpu_mem=" "$config_txt"; then
+      log INFO "Lowering gpu_mem to 64MB (base spec: 1GB RAM, XFCE compositing off)"
+      sed -i 's/^gpu_mem=.*/gpu_mem=64/' "$config_txt"
+    else
+      echo "gpu_mem=64" >>"$config_txt"
+      log INFO "Set gpu_mem=64MB (was 128MB — reduced for 1GB RAM base spec)"
+    fi
+  fi
+  system_tune
+}
+
 board_post_install() {
   log STEP "Raspberry Pi 3B+ post-install configuration"
+  log WARN "8GB SD card is tight for full install (~5-6GB) — prefer installing categories selectively"
 
   log INFO "Installing RPi-specific hardware support packages..."
-  install_packages_full \
+  install_packages \
     raspberrypi-userland \
     libraspberrypi0 \
     libraspberrypi-bin \
@@ -64,28 +79,12 @@ board_post_install() {
     else
       log INFO "VC4 overlay already configured"
     fi
-
-    if ! grep -q "gpu_mem=" "$config_txt"; then
-      echo "gpu_mem=128" >>"$config_txt"
-      log INFO "Set gpu_mem=128MB for desktop rendering"
-    fi
   else
     log WARN "/boot/config.txt not found — VC4 GPU config must be done manually"
   fi
 
-  log INFO "Setting up 1GB swap file (recommended for RPi 3B+ with 1GB RAM)..."
-  if [[ ! -f /swapfile ]]; then
-    fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024
-    chmod 600 /swapfile
-    mkswap /swapfile
-    swapon /swapfile
-    if ! grep -q '/swapfile' /etc/fstab; then
-      echo '/swapfile none swap sw 0 0' >>/etc/fstab
-    fi
-    log INFO "1GB swap file created and enabled"
-  else
-    log INFO "Swap file already exists"
-  fi
+  board_system_tune
+  board_enable_serial_console
 
   log INFO "Enabling Bluetooth service..."
   if command -v systemctl &>/dev/null; then

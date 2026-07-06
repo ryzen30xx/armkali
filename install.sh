@@ -124,4 +124,5 @@ _register_all
 ensure_ui
 board_banner
 log INFO "Detected board: ${BOARD_NAME} (${BOARD_SOC})"
+log INFO "RAM tier: ${RAM_TIER} (CPU/RAM fixed; storage is upgradable)"
 main_menu

@@ -21,6 +21,7 @@ board_arch_info() {
   echo -e "${CYAN}SoC:${NC}          Allwinner H313 (quad-core Cortex-A53)"
   echo -e "${CYAN}Platform:${NC}     x96q TV Box"
   echo -e "${CYAN}RAM:${NC}            ${BOARD_RAM}"
+  echo -e "${CYAN}WiFi:${NC}           Built-in XRadio XR819 (2.4GHz b/g/n — no monitor mode)"
   echo -e "${CYAN}OS:${NC}            $(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d'"' -f2 || echo 'Armbian')"
   echo -e "${CYAN}Kernel:${NC}        $(uname -r)"
 }
@@ -30,7 +31,8 @@ board_gpu_warning() {
 }
 
 board_wireless_note() {
-  log WARN "x96q has no built-in WiFi — use a USB WiFi adapter with monitor mode support (e.g., Alfa AWUS036ACH)"
+  log WARN "x96q has built-in WiFi (XRadio XR819, 2.4GHz b/g/n) but the XR819 driver does NOT support monitor mode"
+  log WARN "For wireless pentesting (aircrack-ng, wifite, hcxdumptool), use a USB adapter with RTL8812AU / AR9271 / RT3070"
 }
 
 board_xfce_video_driver() {
@@ -38,17 +40,8 @@ board_xfce_video_driver() {
 }
 
 board_post_install() {
-  log INFO "Setting up 1GB swap file (recommended for Allwinner H313 with 1GB RAM)..."
-  if [[ ! -f /swapfile ]]; then
-    fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024
-    chmod 600 /swapfile
-    mkswap /swapfile
-    swapon /swapfile
-    if ! grep -q '/swapfile' /etc/fstab; then
-      echo '/swapfile none swap sw 0 0' >>/etc/fstab
-    fi
-    log INFO "1GB swap file created and enabled"
-  else
-    log INFO "Swap file already exists"
-  fi
+  log WARN "8GB eMMC is tight for full install (~5-6GB) — prefer installing categories selectively"
+  board_wireless_note
+  system_tune
+  enable_serial_console "ttyS0" "115200"
 }
