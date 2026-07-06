@@ -1,20 +1,15 @@
 #!/usr/bin/env bash
 #
-# armkali — Kali Linux tools installer for ARM64 boards
+# armkali — Kali Linux tools installer for x96q TV Box
 #
 # Supported boards:
 #   • x96q TV Box (Allwinner H313, 1GB RAM)
-#   • Raspberry Pi 3B+ (Broadcom BCM2837B0, 1GB RAM)
 #
 # One-line install:
 #   curl -sSL https://raw.githubusercontent.com/ryzen30xx/armkali/main/install.sh | sudo bash
 #
 # Or clone and run:
 #   git clone https://github.com/ryzen30xx/armkali.git && cd armkali && sudo ./install.sh
-#
-# Force a specific board:
-#   ARMKALI_BOARD=rpi3bplus curl -sSL .../install.sh | sudo -E bash
-#   ARMKALI_BOARD=x96q ./install.sh
 #
 
 set -euo pipefail
@@ -57,11 +52,6 @@ detect_board() {
     compat="$(tr '\0' '\n' </proc/device-tree/compatible 2>/dev/null)"
   fi
 
-  if echo "$compat" | grep -qi "raspberry"; then
-    echo "rpi3bplus"
-    return
-  fi
-
   if echo "$compat" | grep -qi "allwinner\|sun50i\|h313\|x96q"; then
     echo "x96q"
     return
@@ -71,11 +61,6 @@ detect_board() {
   local cpuinfo=""
   if [[ -f /proc/cpuinfo ]]; then
     cpuinfo="$(cat /proc/cpuinfo 2>/dev/null)"
-  fi
-
-  if echo "$cpuinfo" | grep -qi "BCM2837\|BCM2835\|Raspberry"; then
-    echo "rpi3bplus"
-    return
   fi
 
   if echo "$cpuinfo" | grep -qi "Allwinner\|sun50i\|H313"; then

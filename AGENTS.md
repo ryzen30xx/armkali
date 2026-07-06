@@ -4,24 +4,23 @@ This file provides guidance to the AI agent when working with code in this repos
 
 ## Project Overview
 
-Build a Bash installer script for penetration testing, ethical hacking, and security auditing tools (as found on Kali Linux) on **ARM64 single-board computers**. The installer auto-detects the board and applies board-specific configuration. Currently supported boards:
+Build a Bash installer script for penetration testing, ethical hacking, and security auditing tools (as found on Kali Linux) on **ARM64 single-board computers**. The installer auto-detects the board and applies board-specific configuration. Currently supported board:
 
 - **x96q TV Box** (Allwinner H313 SoC, 1GB RAM, Armbian)
-- **Raspberry Pi 3B+** (Broadcom BCM2837B0 SoC, 1GB RAM, Raspberry Pi OS/Armbian)
 
 The installer must also set up a **Kali Linux GUI** using **XFCE**.
 
 ## Target Platforms
 
-| | x96q TV Box | Raspberry Pi 3B+ |
-|---|---|---|
-| **SoC** | Allwinner H313 | Broadcom BCM2837B0 |
-| **CPU** | Quad-core Cortex-A53 @ 1.5GHz | Quad-core Cortex-A53 @ 1.4GHz |
-| **RAM** | 1 GB | 1 GB |
-| **Architecture** | `arm64` / `aarch64` | `arm64` / `aarch64` |
-| **WiFi** | XRadio XR819 (2.4GHz, no monitor mode) | Built-in 802.11n + BT 4.2 |
-| **GPU** | Mali-G31 (no OpenCL) | VideoCore IV |
-| **OS** | Armbian | Raspberry Pi OS / Armbian |
+| | x96q TV Box |
+|---|---|
+| **SoC** | Allwinner H313 |
+| **CPU** | Quad-core Cortex-A53 @ 1.5GHz |
+| **RAM** | 1 GB |
+| **Architecture** | `arm64` / `aarch64` |
+| **WiFi** | XRadio XR819 (2.4GHz, no monitor mode) |
+| **GPU** | Mali-G31 (no OpenCL) |
+| **OS** | Armbian |
 
 - Never assume x86/x86_64 binaries exist
 - **GUI**: XFCE4 desktop environment
@@ -43,10 +42,10 @@ The installer must also set up a **Kali Linux GUI** using **XFCE**.
 
 - **Entry point**: `install.sh` — board auto-detection, downloads board files from GitHub if running via `curl | bash`
 - **Shared library**: `lib/common.sh` — utilities, UI, repo management, ARM64 compat, all 9 categories, XFCE setup, menu system
-- **Board configs**: `boards/x96q.sh`, `boards/rpi3bplus.sh` — board constants, hardware hooks, post-install steps
+- **Board configs**: `boards/x96q.sh` — board constants, hardware hooks, post-install steps
 - **Board hooks**: `board_banner()`, `board_arch_info()`, `board_gpu_warning()`, `board_wireless_note()`, `board_xfce_video_driver()`, `board_system_tune()`, `board_post_install()`
 - **One-line install**: `curl -sSL https://raw.githubusercontent.com/ryzen30xx/armkali/main/install.sh | sudo bash`
-- **Force board**: `ARMKALI_BOARD=rpi3bplus` or `ARMKALI_BOARD=x96q` environment variable
+- **Force board**: `ARMKALI_BOARD=x96q` environment variable
 - **Menu-driven**: `whiptail` (preferred) or `dialog` with terminal fallback
 - **Categories**: Wireless, Web, Forensics, Exploitation, Password Cracking, Sniffing/Spoofing, Reverse Engineering, Information Gathering, Reporting
 - Each category defines a `_NAME`, `_DESC`, `_PACKAGES` array, and an `install_*` function
@@ -84,7 +83,6 @@ The installer is tuned for the **1GB RAM / 8GB eMMC** base hardware. **CPU and R
 
 - **`enable_serial_console <tty> <baud>`** — helper in `lib/common.sh`. Writes a systemd override (`/etc/systemd/system/serial-getty@<tty>.service.d/override.conf`) with `agetty -8 -L <tty> <baud> $TERM`, then enables + starts the unit. Idempotent.
 - **x96q**: `enable_serial_console "ttyS0" "115200"` — H313 UART pads on PCB (RX/TX/GND between USB1 and CVBS socket).
-- **RPi 3B+**: `board_enable_serial_console` adds `enable_uart=1` to `/boot/config.txt`, appends `console=ttyAMA0,115200` to `/boot/cmdline.txt`, then calls `enable_serial_console "ttyAMA0" "115200"`.
 - Default-on policy: the board is sold as a dev kit — users buying a cheap ARM box expect serial access for boot-log debugging and headless recovery. Do not prompt for confirmation.
 
 ### XFCE 1GB tuning (do not remove)
@@ -100,4 +98,3 @@ The installer is tuned for the **1GB RAM / 8GB eMMC** base hardware. **CPU and R
 - **All `install_*` functions use `install_packages` (with `--no-install-recommends`)**. Do not re-add `install_packages_full` — it was removed.
 - **XFCE minimal**: dropped `xfce4-goodies`, `xfce4-screensaver`, `firefox-esr`, `pulseaudio`, `pavucontrol` to fit 8GB eMMC.
 - **`check_disk_space()`** — fails if `/var` <100MB, warns if `/` <2GB. Wired into `action_install_all()`.
-- **RPi `gpu_mem=64`** — `board_system_tune()` in `boards/rpi3bplus.sh` overrides the 128MB default to free 64MB of system RAM.
