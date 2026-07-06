@@ -12,7 +12,7 @@ Build a Bash installer script for penetration testing, ethical hacking, and secu
 - **OS**: Armbian (Debian/Ubuntu base, aarch64)
 - **Architecture**: `arm64` / `aarch64` — never assume x86/x86_64 binaries exist
 - **GUI**: XFCE4 desktop environment
-- **Constraints**: Limited RAM (~1-2 GB), eMMC or SD-card storage, no discrete GPU for hashcat
+- **Constraints**: Limited RAM (~1 GB), eMMC or SD-card storage, no discrete GPU for hashcat
 
 ## Scripting Conventions
 

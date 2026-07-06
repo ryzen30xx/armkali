@@ -23,7 +23,7 @@ A single-file, menu-driven installer that sets up a full Kali toolset and XFCE d
 | **SoC** | Allwinner H313 |
 | **CPU** | Quad-core ARM Cortex-A53 @ 1.5 GHz |
 | **Architecture** | `aarch64` / `arm64` |
-| **RAM** | 1–2 GB |
+| **RAM** | 1 GB |
 | **Storage** | eMMC or microSD |
 | **GPU** | Mali-G31 (no CUDA/OpenCL — hashcat runs CPU-only) |
 | **OS** | Armbian (Debian/Ubuntu base) |
@@ -170,7 +170,7 @@ Safe to run multiple times. Already-installed packages are skipped, the Kali rep
 ## Limitations
 
 - **No GPU cracking** — The Mali-G31 on the H313 does not support CUDA or OpenCL. Hashcat runs on CPU only (~50-100 kH/s for MD5). Use a cloud rig or external GPU for serious cracking.
-- **Limited RAM** — With 1-2 GB, avoid running multiple heavy tools simultaneously (e.g., Burp Suite + Metasploit + browser). Close unused apps.
+- **Limited RAM** — With only 1 GB, avoid running multiple heavy tools simultaneously (e.g., Burp Suite + Metasploit + browser). Close unused apps. Add a swap file if needed: `sudo fallocate -l 1G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`
 - **Storage** — A full install (all categories + XFCE) requires ~6-8 GB. Use a 32 GB+ SD card for comfortable headroom.
 - **Monitor mode** — The x96q has no built-in WiFi. You'll need a USB WiFi adapter that supports monitor mode (e.g., Alfa AWUS036ACH) for wireless tools.
 
